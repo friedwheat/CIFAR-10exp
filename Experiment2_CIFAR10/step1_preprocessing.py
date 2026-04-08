@@ -109,8 +109,10 @@ def stratified_sample_per_class(
 
 
 def extract_feature_from_bgr(img_bgr: np.ndarray, dim: int) -> np.ndarray:
-    if dim == 3072:
-        return img_bgr.reshape(-1).astype(np.float32) / 255.0
+    if dim not in GRAY_RESIZE_SHAPES:
+        raise ValueError(
+            f"不支持的灰度特征维度: {dim}，可选 {sorted(GRAY_RESIZE_SHAPES.keys())}"
+        )
 
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     width, height = GRAY_RESIZE_SHAPES[dim]
@@ -124,8 +126,14 @@ def extract_multiscale_features(X_vec: np.ndarray) -> Dict[int, np.ndarray]:
         features[dim] = np.empty((len(X_vec), dim), dtype=np.float32)
 
     for i in range(len(X_vec)):
+        # 3072 维特征直接由原始向量归一化得到，避免不必要图像转换
+        features[3072][i] = X_vec[i].astype(np.float32) / 255.0
+
+        # 其余灰度特征按要求走 RGB->BGR，再灰度和 resize
         img_bgr = vec3072_to_bgr(X_vec[i])
         for dim in FEATURE_DIMS:
+            if dim == 3072:
+                continue
             features[dim][i] = extract_feature_from_bgr(img_bgr, dim)
 
     return features

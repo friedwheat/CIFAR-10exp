@@ -207,6 +207,10 @@ def predict_1nn(
     return preds
 
 
+def ensure_float32(X: np.ndarray) -> np.ndarray:
+    return X if X.dtype == np.float32 else X.astype(np.float32)
+
+
 def evaluate_binary_bias_variance(
     X_train: np.ndarray,
     y_train_bin: np.ndarray,
@@ -232,6 +236,7 @@ def evaluate_binary_bias_variance(
     mean_pred = preds_float.mean(axis=0)
     # Variance = E_x[Var_D(f_D(x))]
     variance = float(preds_float.var(axis=0).mean())
+    # Sq. Bias = E_x[(E_D[f_D(x)] - y(x))^2]
     sq_bias = float(((mean_pred - y_test_float) ** 2).mean())
     mse = float(((preds_float - y_test_float[None, :]) ** 2).mean())
     return mse, variance, sq_bias
@@ -453,12 +458,8 @@ def main() -> None:
     variance_by_dim: List[float] = []
     sq_bias_by_dim: List[float] = []
     for dim in dims:
-        X_train_bin = data[f"X_train_{dim}"][train_bin_mask]
-        X_test_bin = data[f"X_test_{dim}"][test_bin_mask]
-        if X_train_bin.dtype != np.float32:
-            X_train_bin = X_train_bin.astype(np.float32)
-        if X_test_bin.dtype != np.float32:
-            X_test_bin = X_test_bin.astype(np.float32)
+        X_train_bin = ensure_float32(data[f"X_train_{dim}"][train_bin_mask])
+        X_test_bin = ensure_float32(data[f"X_test_{dim}"][test_bin_mask])
 
         mse, variance, sq_bias = evaluate_binary_bias_variance(
             X_train=X_train_bin,
@@ -513,8 +514,8 @@ def main() -> None:
     for k, errs in error_by_k.items():
         save_dict[f"error_k_{k}"] = np.array(errs)
     save_dict["binary_classes"] = np.array([class_a, class_b], dtype=np.int64)
-    save_dict["binary_num_repeats"] = np.array(args.num_repeats, dtype=np.int64)
-    save_dict["binary_subset_train_size"] = np.array(args.subset_train_size, dtype=np.int64)
+    save_dict["binary_num_repeats"] = args.num_repeats
+    save_dict["binary_subset_train_size"] = args.subset_train_size
     save_dict["binary_mse"] = np.array(mse_by_dim, dtype=np.float64)
     save_dict["binary_variance"] = np.array(variance_by_dim, dtype=np.float64)
     save_dict["binary_sq_bias"] = np.array(sq_bias_by_dim, dtype=np.float64)

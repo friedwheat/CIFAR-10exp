@@ -124,16 +124,17 @@ def extract_multiscale_features(X_vec: np.ndarray) -> Dict[int, np.ndarray]:
     features: Dict[int, np.ndarray] = {}
     for dim in FEATURE_DIMS:
         features[dim] = np.empty((len(X_vec), dim), dtype=np.float32)
+    gray_dims = [dim for dim in FEATURE_DIMS if dim != 3072]
 
     for i in range(len(X_vec)):
         # 3072 维特征直接由原始向量归一化得到，避免不必要图像转换
         features[3072][i] = X_vec[i].astype(np.float32) / 255.0
 
         # 其余灰度特征按要求走 RGB->BGR，再灰度和 resize
+        if not gray_dims:
+            continue
         img_bgr = vec3072_to_bgr(X_vec[i])
-        for dim in FEATURE_DIMS:
-            if dim == 3072:
-                continue
+        for dim in gray_dims:
             features[dim][i] = extract_feature_from_bgr(img_bgr, dim)
 
     return features

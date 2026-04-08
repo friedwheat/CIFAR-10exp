@@ -1,400 +1,317 @@
 """
-step2_experiments.py – 步骤二：核心实验（距离分析、分类、Bias-Variance）
+step2_experiments.py – 步骤二：多分辨率下的 1-NN / k-NN 实验
 
-包含以下三个实验：
-
-A. 距离分析（Distance Analysis）
-   - 计算各类别中心（mean）在特征空间中的 L2 距离矩阵
-   - 输出并保存类间距离矩阵
-
-B. k-NN 分类（Classification）
-   - 使用 k 近邻分类器对不同特征进行分类
-   - 遍历多个 k 值，记录训练集与测试集准确率
-
-C. Bias-Variance 权衡（Bias-Variance Tradeoff）
-   - 固定特征类型，遍历多个 k 值
-   - 通过 bootstrap 方法近似估计 Bias² 与 Variance
-   - 保存结果供可视化步骤使用
-
-用法：
-  python step2_experiments.py
-  python step2_experiments.py --results_dir results --feature hist --max_train 5000
+实验内容：
+1) 1-NN 最近邻距离分析（Nearest / Average Distance）
+2) 1-NN 分类与错例诊断
+3) k=1,3,5 的分类误差曲线对比
 """
 
 import argparse
 import os
-import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Sequence, Tuple
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 
-from utils import class_means, get_class_names
 
-# ---------------------------------------------------------------------------
-# 命令行参数
-# ---------------------------------------------------------------------------
+DEFAULT_DIMS = [16, 64, 144, 256, 576, 1024, 3072]
+
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="CIFAR-10 核心实验")
+    parser = argparse.ArgumentParser(description="CIFAR-10 多分辨率 1-NN / k-NN 实验")
+    parser.add_argument("--results_dir", type=str, default="results", help="结果目录（默认：results）")
     parser.add_argument(
-        "--results_dir",
-        type=str,
-        default="results",
-        help="存放特征文件与保存结果的目录（默认：results）",
-    )
-    parser.add_argument(
-        "--feature",
-        type=str,
-        default="hist",
-        choices=["flatten", "gray", "hist"],
-        help="用于实验 B/C 的特征类型（默认：hist）",
-    )
-    parser.add_argument(
-        "--max_train",
-        type=int,
-        default=5000,
-        help="k-NN 使用的最大训练样本数（默认：5000，减少运行时间）",
-    )
-    parser.add_argument(
-        "--max_test",
-        type=int,
-        default=1000,
-        help="k-NN 使用的最大测试样本数（默认：1000）",
-    )
-    parser.add_argument(
-        "--k_values",
+        "--dims",
         type=int,
         nargs="+",
-        default=[1, 3, 5, 7, 10, 15, 20, 30, 50],
-        help="k-NN 实验使用的 k 值列表（默认：1 3 5 7 10 15 20 30 50）",
+        default=DEFAULT_DIMS,
+        help=f"参与实验的特征维度（默认：{' '.join(map(str, DEFAULT_DIMS))}）",
     )
-    parser.add_argument(
-        "--bv_bootstrap",
-        type=int,
-        default=10,
-        help="Bias-Variance 实验的 bootstrap 轮数（默认：10）",
-    )
-    parser.add_argument(
-        "--bv_sample_size",
-        type=int,
-        default=2000,
-        help="每次 bootstrap 的训练样本数（默认：2000）",
-    )
+    parser.add_argument("--max_train", type=int, default=2000, help="训练样本上限（默认：2000）")
+    parser.add_argument("--max_test", type=int, default=500, help="测试样本上限（默认：500）")
+    parser.add_argument("--k_values", type=int, nargs="+", default=[1, 3, 5], help="k 值列表（默认：1 3 5）")
+    parser.add_argument("--batch_size", type=int, default=100, help="分批计算大小（默认：100）")
     return parser.parse_args()
 
 
-# ---------------------------------------------------------------------------
-# 工具：k-NN
-# ---------------------------------------------------------------------------
-
-def knn_predict(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_query: np.ndarray,
-    k: int,
-    batch_size: int = 200,
-) -> np.ndarray:
-    """基于 L2 距离的 k-NN 预测，分批计算以节省内存。
-
-    Parameters
-    ----------
-    X_train  : shape (N, D)
-    y_train  : shape (N,)
-    X_query  : shape (M, D)
-    k        : 近邻数
-    batch_size : 每批查询样本数
-
-    Returns
-    -------
-    y_pred : shape (M,)
-    """
-    M = X_query.shape[0]
-    y_pred = np.empty(M, dtype=y_train.dtype)
-
-    for start in range(0, M, batch_size):
-        end = min(start + batch_size, M)
-        # 计算 L2²：||x - y||² = ||x||² + ||y||² - 2 x·y
-        q = X_query[start:end]  # (B, D)
-        dists_sq = (
-            np.sum(q ** 2, axis=1, keepdims=True)          # (B, 1)
-            + np.sum(X_train ** 2, axis=1)                  # (N,)
-            - 2.0 * q @ X_train.T                           # (B, N)
-        )
-        # 取前 k 个最近邻
-        knn_idx = np.argpartition(dists_sq, k, axis=1)[:, :k]
-        knn_labels = y_train[knn_idx]  # (B, k)
-        # 多数投票
-        for i in range(end - start):
-            counts = np.bincount(knn_labels[i], minlength=int(y_train.max()) + 1)
-            y_pred[start + i] = counts.argmax()
-
-    return y_pred
+def l2_distances(query: np.ndarray, train: np.ndarray) -> np.ndarray:
+    """返回 query 到 train 的 L2 距离矩阵，shape=(B, N)。"""
+    d2 = (
+        np.sum(query ** 2, axis=1, keepdims=True)
+        + np.sum(train ** 2, axis=1)
+        - 2.0 * query @ train.T
+    )
+    d2 = np.maximum(d2, 0.0)
+    return np.sqrt(d2)
 
 
-def accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    return float((y_true == y_pred).mean())
-
-
-# ---------------------------------------------------------------------------
-# 实验 A：距离分析
-# ---------------------------------------------------------------------------
-
-def experiment_distance_analysis(
-    features: Dict[str, Tuple[np.ndarray, np.ndarray]],
-    results_dir: str,
-) -> None:
-    """计算并保存各特征类型的类间距离矩阵。"""
-    print("\n" + "=" * 60)
-    print("实验 A：类间距离分析")
-    print("=" * 60)
-
-    class_names = get_class_names()
-    distance_matrices: Dict[str, np.ndarray] = {}
-
-    for feat_name, (X, y) in features.items():
-        means = class_means(X, y, num_classes=10)  # (10, D)
-        # L2 距离矩阵
-        diff = means[:, np.newaxis, :] - means[np.newaxis, :, :]  # (10, 10, D)
-        dist_matrix = np.sqrt((diff ** 2).sum(axis=-1))            # (10, 10)
-        distance_matrices[feat_name] = dist_matrix
-
-        print(f"\n  特征：{feat_name}  |  特征维度：{X.shape[1]}")
-        print(f"  {'':12}", end="")
-        for name in class_names:
-            print(f"{name[:6]:>8}", end="")
-        print()
-        for i, row_name in enumerate(class_names):
-            print(f"  {row_name:<12}", end="")
-            for j in range(10):
-                print(f"{dist_matrix[i, j]:8.3f}", end="")
-            print()
-
-    save_path = os.path.join(results_dir, "distance_matrices.npz")
-    np.savez_compressed(save_path, **distance_matrices)
-    print(f"\n  距离矩阵已保存：{save_path}")
-
-
-# ---------------------------------------------------------------------------
-# 实验 B：k-NN 分类
-# ---------------------------------------------------------------------------
-
-def experiment_classification(
+def evaluate_distances_and_knn(
     X_train: np.ndarray,
     y_train: np.ndarray,
     X_test: np.ndarray,
-    y_test: np.ndarray,
-    k_values: List[int],
-    feat_name: str,
+    k_values: Sequence[int],
+    batch_size: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[int, np.ndarray]]:
+    """计算测试集上的最近邻距离、平均距离、最近邻索引与各 k 预测。"""
+    n_test = X_test.shape[0]
+    k_values = sorted(set(int(k) for k in k_values))
+    max_k = max(k_values)
+
+    nearest_dist = np.empty(n_test, dtype=np.float64)
+    avg_dist = np.empty(n_test, dtype=np.float64)
+    nearest_idx = np.empty(n_test, dtype=np.int64)
+    preds: Dict[int, np.ndarray] = {k: np.empty(n_test, dtype=y_train.dtype) for k in k_values}
+    n_classes = int(y_train.max()) + 1
+
+    for start in range(0, n_test, batch_size):
+        end = min(start + batch_size, n_test)
+        dist = l2_distances(X_test[start:end], X_train)
+
+        local_nn_idx = np.argmin(dist, axis=1)
+        nearest_idx[start:end] = local_nn_idx
+        nearest_dist[start:end] = dist[np.arange(end - start), local_nn_idx]
+        avg_dist[start:end] = dist.mean(axis=1)
+
+        nn_part_idx = np.argpartition(dist, kth=max_k - 1, axis=1)[:, :max_k]
+        nn_part_dist = np.take_along_axis(dist, nn_part_idx, axis=1)
+        order = np.argsort(nn_part_dist, axis=1)
+        nn_idx_sorted = np.take_along_axis(nn_part_idx, order, axis=1)
+        nn_labels = y_train[nn_idx_sorted]
+
+        for k in k_values:
+            topk = nn_labels[:, :k]
+            for i in range(end - start):
+                counts = np.bincount(topk[i], minlength=n_classes)
+                preds[k][start + i] = counts.argmax()
+
+    return nearest_dist, avg_dist, nearest_idx, preds
+
+
+def plot_distance_curves(
+    dims: List[int],
+    nearest_means: List[float],
+    ratio_means: List[float],
     results_dir: str,
 ) -> None:
-    """遍历多个 k 值，记录训练集和测试集准确率。"""
-    print("\n" + "=" * 60)
-    print(f"实验 B：k-NN 分类  |  特征：{feat_name}")
-    print(f"  训练集：{len(y_train)}  测试集：{len(y_test)}")
-    print("=" * 60)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
 
-    train_accs, test_accs = [], []
+    axes[0].plot(dims, nearest_means, "o-", color="royalblue")
+    axes[0].set_xlabel("Dimension")
+    axes[0].set_ylabel("Average Distance to 1-NN")
+    axes[0].set_title("Average Distance to 1-NN vs Dimension")
+    axes[0].grid(alpha=0.3)
 
-    print(f"\n  {'k':>5}  {'训练准确率':>12}  {'测试准确率':>12}  {'耗时':>8}")
-    print(f"  {'-'*45}")
-    for k in k_values:
-        t0 = time.time()
-        y_pred_test = knn_predict(X_train, y_train, X_test, k)
-        y_pred_train = knn_predict(X_train, y_train, X_train[:500], k)
-        acc_train = accuracy(y_train[:500], y_pred_train)
-        acc_test = accuracy(y_test, y_pred_test)
-        train_accs.append(acc_train)
-        test_accs.append(acc_test)
-        elapsed = time.time() - t0
-        print(f"  {k:>5}  {acc_train:>12.4f}  {acc_test:>12.4f}  {elapsed:>7.2f}s")
+    axes[1].plot(dims, ratio_means, "s-", color="tomato")
+    axes[1].set_xlabel("Dimension")
+    axes[1].set_ylabel("Distance Ratio (Nearest/Average)")
+    axes[1].set_title("Distance Ratio (Nearest/Average) vs Dimension")
+    axes[1].grid(alpha=0.3)
 
-    save_path = os.path.join(results_dir, f"knn_results_{feat_name}.npz")
-    np.savez_compressed(
-        save_path,
-        k_values=np.array(k_values),
-        train_accs=np.array(train_accs),
-        test_accs=np.array(test_accs),
-    )
-    print(f"\n  k-NN 结果已保存：{save_path}")
-    best_k = k_values[int(np.argmax(test_accs))]
-    print(f"  最优 k = {best_k}，测试准确率 = {max(test_accs):.4f}")
+    plt.tight_layout()
+    save_path = os.path.join(results_dir, "distance_analysis_vs_dimension.png")
+    plt.savefig(save_path, dpi=130)
+    plt.close()
+    print(f"  距离分析曲线已保存：{save_path}")
 
 
-# ---------------------------------------------------------------------------
-# 实验 C：Bias-Variance 权衡
-# ---------------------------------------------------------------------------
-
-def estimate_bias_variance(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    k: int,
-    n_bootstrap: int,
-    sample_size: int,
-) -> Tuple[float, float, float]:
-    """通过 bootstrap 近似估计给定 k 下的 Bias² 和 Variance。
-
-    采用 Kohavi & Wolpert (1996) 风格的分解方式：
-      - 对每个测试样本，使用多次 bootstrap 子集的预测结果
-      - bias  = 平均预测与真实标签不符的比例（0/1 损失意义）
-      - var   = 预测结果在不同 bootstrap 之间的方差（0/1 损失意义）
-      - error = bias + var（近似）
-
-    Returns
-    -------
-    bias, variance, mean_error
-    """
-    rng = np.random.RandomState(42)
-    N_test = len(y_test)
-    all_preds = np.empty((n_bootstrap, N_test), dtype=np.int64)
-
-    for b in range(n_bootstrap):
-        idx = rng.choice(len(y_train), size=sample_size, replace=True)
-        X_sub = X_train[idx]
-        y_sub = y_train[idx]
-        all_preds[b] = knn_predict(X_sub, y_sub, X_test, k)
-
-    # 主预测（众数）
-    n_classes = int(all_preds.max()) + 1
-    main_pred = np.apply_along_axis(
-        lambda col: np.bincount(col, minlength=n_classes).argmax(), axis=0, arr=all_preds
-    )
-
-    # Bias²（0/1）：主预测与真实标签不符的比例
-    bias = float((main_pred != y_test).mean())
-
-    # Variance：各次预测与主预测不符的平均比例
-    variance = float((all_preds != main_pred[np.newaxis, :]).mean())
-
-    # 平均误差
-    mean_error = float((all_preds != y_test[np.newaxis, :]).mean())
-
-    return bias, variance, mean_error
-
-
-def experiment_bias_variance(
-    X_train: np.ndarray,
-    y_train: np.ndarray,
-    X_test: np.ndarray,
-    y_test: np.ndarray,
-    k_values: List[int],
-    feat_name: str,
-    n_bootstrap: int,
-    sample_size: int,
+def plot_knn_error_curves(
+    dims: List[int],
+    error_by_k: Dict[int, List[float]],
     results_dir: str,
 ) -> None:
-    """遍历多个 k，估计 Bias-Variance 权衡。"""
-    print("\n" + "=" * 60)
-    print(f"实验 C：Bias-Variance  |  特征：{feat_name}")
-    print(f"  Bootstrap 轮数：{n_bootstrap}  每轮样本数：{sample_size}  测试集：{len(y_test)}")
-    print("=" * 60)
-
-    biases, variances, errors = [], [], []
-
-    print(f"\n  {'k':>5}  {'Bias²':>10}  {'Variance':>10}  {'Error':>10}  {'耗时':>8}")
-    print(f"  {'-'*50}")
-    for k in k_values:
-        t0 = time.time()
-        b, v, e = estimate_bias_variance(
-            X_train, y_train, X_test, y_test, k, n_bootstrap, sample_size
-        )
-        biases.append(b)
-        variances.append(v)
-        errors.append(e)
-        elapsed = time.time() - t0
-        print(f"  {k:>5}  {b:>10.4f}  {v:>10.4f}  {e:>10.4f}  {elapsed:>7.2f}s")
-
-    save_path = os.path.join(results_dir, f"bias_variance_{feat_name}.npz")
-    np.savez_compressed(
-        save_path,
-        k_values=np.array(k_values),
-        biases=np.array(biases),
-        variances=np.array(variances),
-        errors=np.array(errors),
-    )
-    print(f"\n  Bias-Variance 结果已保存：{save_path}")
+    fig, ax = plt.subplots(figsize=(8, 5))
+    markers = {1: "o-", 3: "s--", 5: "^-."}
+    for k, errors in sorted(error_by_k.items()):
+        ax.plot(dims, errors, markers.get(k, "o-"), label=f"k={k}")
+    ax.set_xlabel("Dimension")
+    ax.set_ylabel("Classification Error")
+    ax.set_title("k-NN Classification Error vs Dimension")
+    ax.grid(alpha=0.3)
+    ax.legend()
+    ax.set_ylim(0, 1)
+    plt.tight_layout()
+    save_path = os.path.join(results_dir, "knn_error_vs_dimension.png")
+    plt.savefig(save_path, dpi=130)
+    plt.close()
+    print(f"  分类误差曲线已保存：{save_path}")
 
 
-# ---------------------------------------------------------------------------
-# 主流程
-# ---------------------------------------------------------------------------
+def vec3072_to_rgb(vec: np.ndarray) -> np.ndarray:
+    return vec.reshape(3, 32, 32).transpose(1, 2, 0).astype(np.uint8)
+
+
+def load_images_for_diagnosis(
+    results_dir: str,
+    features_data: np.lib.npyio.NpzFile,
+    n_train: int,
+    n_test: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    raw_path = os.path.join(results_dir, "raw_images.npz")
+    if os.path.exists(raw_path):
+        raw = np.load(raw_path)
+        return raw["X_train_raw"][:n_train], raw["X_test_raw"][:n_test]
+
+    train_bgr = (features_data["X_train_3072"][:n_train] * 255.0).astype(np.uint8).reshape(-1, 32, 32, 3)
+    test_bgr = (features_data["X_test_3072"][:n_test] * 255.0).astype(np.uint8).reshape(-1, 32, 32, 3)
+    train_rgb = train_bgr[:, :, :, ::-1].reshape(-1, 3072)
+    test_rgb = test_bgr[:, :, :, ::-1].reshape(-1, 3072)
+    return train_rgb, test_rgb
+
+
+def plot_misclassified_pair(
+    dim: int,
+    test_idx: int,
+    nn_train_idx: int,
+    y_true: int,
+    y_pred: int,
+    train_raw: np.ndarray,
+    test_raw: np.ndarray,
+    results_dir: str,
+) -> None:
+    test_img = vec3072_to_rgb(test_raw[test_idx])
+    nn_img = vec3072_to_rgb(train_raw[nn_train_idx])
+
+    fig, axes = plt.subplots(1, 2, figsize=(6.5, 3.2))
+    axes[0].imshow(test_img)
+    axes[0].set_title(f"Test (idx={test_idx})\ntrue={y_true}, pred={y_pred}")
+    axes[0].axis("off")
+
+    axes[1].imshow(nn_img)
+    axes[1].set_title(f"Nearest Train (idx={nn_train_idx})\nlabel={y_pred}")
+    axes[1].axis("off")
+
+    fig.suptitle(f"Misclassified 1-NN Pair @ dim={dim}")
+    plt.tight_layout()
+    save_path = os.path.join(results_dir, f"misclassified_pair_dim_{dim}.png")
+    plt.savefig(save_path, dpi=140)
+    plt.close()
+    print(f"  错例图已保存：{save_path}")
+
 
 def main() -> None:
     args = parse_args()
+    os.makedirs(args.results_dir, exist_ok=True)
 
-    # ------------------------------------------------------------------
-    # 加载预处理特征
-    # ------------------------------------------------------------------
     features_path = os.path.join(args.results_dir, "features.npz")
     if not os.path.exists(features_path):
         raise FileNotFoundError(
-            f"找不到特征文件：{features_path}\n"
-            "请先运行 step1_preprocessing.py 生成特征。"
+            f"找不到特征文件：{features_path}\n请先运行 step1_preprocessing.py 生成特征。"
         )
 
-    print(f"[步骤二] 加载特征文件：{features_path}")
+    print(f"[步骤二] 加载特征：{features_path}")
     data = np.load(features_path)
-
-    all_features = {
-        "flatten": (data["X_train_flat"], data["X_test_flat"]),
-        "gray": (data["X_train_gray"], data["X_test_gray"]),
-        "hist": (data["X_train_hist"], data["X_test_hist"]),
-    }
     y_train_full = data["y_train"]
     y_test_full = data["y_test"]
 
-    # 截取样本以加速
-    N_tr = min(args.max_train, len(y_train_full))
-    N_te = min(args.max_test, len(y_test_full))
-    y_train = y_train_full[:N_tr]
-    y_test = y_test_full[:N_te]
-    print(f"  使用训练样本：{N_tr}  测试样本：{N_te}")
+    dims = []
+    for dim in sorted(set(args.dims)):
+        if f"X_train_{dim}" in data and f"X_test_{dim}" in data:
+            dims.append(dim)
+        else:
+            print(f"  [警告] 未找到 dim={dim} 对应特征，已跳过。")
+    if not dims:
+        raise ValueError("没有可用的维度特征，请检查 --dims 参数与 features.npz 内容。")
 
-    # ------------------------------------------------------------------
-    # 实验 A：距离分析（使用全量训练特征）
-    # ------------------------------------------------------------------
-    dist_features = {
-        name: (data[f"X_train_{name}"], y_train_full)
-        for name in ("flat", "gray", "hist")
-    }
-    # 键名与保存时对齐
-    dist_features_renamed = {
-        "flatten": (data["X_train_flat"], y_train_full),
-        "gray": (data["X_train_gray"], y_train_full),
-        "hist": (data["X_train_hist"], y_train_full),
-    }
-    experiment_distance_analysis(dist_features_renamed, args.results_dir)
+    n_train = min(args.max_train, len(y_train_full))
+    n_test = min(args.max_test, len(y_test_full))
+    y_train = y_train_full[:n_train]
+    y_test = y_test_full[:n_test]
+    print(f"  使用样本：train={n_train} test={n_test}")
+    print(f"  维度列表：{dims}")
+    print(f"  k 列表：{sorted(set(args.k_values))}")
 
-    # ------------------------------------------------------------------
-    # 实验 B：k-NN 分类
-    # ------------------------------------------------------------------
-    X_train = all_features[args.feature][0][:N_tr]
-    X_test = all_features[args.feature][1][:N_te]
+    nearest_mean_by_dim: List[float] = []
+    avg_mean_by_dim: List[float] = []
+    ratio_mean_by_dim: List[float] = []
+    error_by_k: Dict[int, List[float]] = {k: [] for k in sorted(set(args.k_values))}
+    pred_by_dim_k1: Dict[int, np.ndarray] = {}
+    nn_idx_by_dim: Dict[int, np.ndarray] = {}
 
-    experiment_classification(
-        X_train, y_train,
-        X_test, y_test,
-        args.k_values,
-        args.feature,
-        args.results_dir,
+    print("\n" + "=" * 78)
+    print("实验 1+2+3：距离分析 + 1-NN/k-NN 分类")
+    print("=" * 78)
+    print(
+        f"{'dim':>6}  {'near_mean':>12}  {'avg_mean':>12}  {'ratio_mean':>12}  "
+        + "  ".join([f"err@k={k:>2}" for k in sorted(error_by_k)])
     )
+    print("-" * 78)
 
-    # ------------------------------------------------------------------
-    # 实验 C：Bias-Variance
-    # ------------------------------------------------------------------
-    bv_k_values = [k for k in args.k_values if k <= 20]
-    experiment_bias_variance(
-        X_train, y_train,
-        X_test, y_test,
-        bv_k_values,
-        args.feature,
-        n_bootstrap=args.bv_bootstrap,
-        sample_size=min(args.bv_sample_size, N_tr),
-        results_dir=args.results_dir,
-    )
+    for dim in dims:
+        X_train = data[f"X_train_{dim}"][:n_train].astype(np.float32, copy=False)
+        X_test = data[f"X_test_{dim}"][:n_test].astype(np.float32, copy=False)
 
-    print("\n[步骤二] 所有实验完成！\n")
+        nearest_dist, avg_dist, nearest_idx, preds = evaluate_distances_and_knn(
+            X_train=X_train,
+            y_train=y_train,
+            X_test=X_test,
+            k_values=sorted(error_by_k),
+            batch_size=args.batch_size,
+        )
+
+        ratio = nearest_dist / np.maximum(avg_dist, 1e-12)
+        nearest_mean = float(nearest_dist.mean())
+        avg_mean = float(avg_dist.mean())
+        ratio_mean = float(ratio.mean())
+
+        nearest_mean_by_dim.append(nearest_mean)
+        avg_mean_by_dim.append(avg_mean)
+        ratio_mean_by_dim.append(ratio_mean)
+        pred_by_dim_k1[dim] = preds[1]
+        nn_idx_by_dim[dim] = nearest_idx
+
+        err_parts = []
+        for k in sorted(error_by_k):
+            err = float((preds[k] != y_test).mean())
+            error_by_k[k].append(err)
+            err_parts.append(f"{err:>8.4f}")
+
+        print(f"{dim:>6}  {nearest_mean:>12.6f}  {avg_mean:>12.6f}  {ratio_mean:>12.6f}  " + "  ".join(err_parts))
+
+    print("-" * 78)
+
+    plot_distance_curves(dims, nearest_mean_by_dim, ratio_mean_by_dim, args.results_dir)
+    plot_knn_error_curves(dims, error_by_k, args.results_dir)
+
+    # 错例：优先最高维（3072）；若该维度无错例，则退化到 k=1 错误率最高的维度
+    dim_for_case = 3072 if 3072 in dims else max(dims)
+    mis_idx = np.where(pred_by_dim_k1[dim_for_case] != y_test)[0]
+    if mis_idx.size == 0:
+        worst_dim_idx = int(np.argmax(error_by_k[1]))
+        dim_for_case = dims[worst_dim_idx]
+        mis_idx = np.where(pred_by_dim_k1[dim_for_case] != y_test)[0]
+
+    if mis_idx.size > 0:
+        chosen_test_idx = int(mis_idx[0])
+        chosen_nn_idx = int(nn_idx_by_dim[dim_for_case][chosen_test_idx])
+        train_raw, test_raw = load_images_for_diagnosis(args.results_dir, data, n_train, n_test)
+        plot_misclassified_pair(
+            dim=dim_for_case,
+            test_idx=chosen_test_idx,
+            nn_train_idx=chosen_nn_idx,
+            y_true=int(y_test[chosen_test_idx]),
+            y_pred=int(pred_by_dim_k1[dim_for_case][chosen_test_idx]),
+            train_raw=train_raw,
+            test_raw=test_raw,
+            results_dir=args.results_dir,
+        )
+    else:
+        print("  [提示] 所有维度在 k=1 上均无错例，跳过错例图。")
+
+    save_path = os.path.join(args.results_dir, "nn_knn_multidim_results.npz")
+    save_dict = {
+        "dims": np.array(dims),
+        "nearest_mean": np.array(nearest_mean_by_dim),
+        "average_mean": np.array(avg_mean_by_dim),
+        "ratio_mean": np.array(ratio_mean_by_dim),
+    }
+    for k, errs in error_by_k.items():
+        save_dict[f"error_k_{k}"] = np.array(errs)
+    np.savez_compressed(save_path, **save_dict)
+    print(f"  结果数据已保存：{save_path}")
+    print("\n[步骤二] 实验完成！\n")
 
 
 if __name__ == "__main__":

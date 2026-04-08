@@ -129,7 +129,7 @@ def extract_multiscale_features(X_vec: np.ndarray) -> Dict[int, np.ndarray]:
     for i in range(len(X_vec)):
         img_bgr = vec3072_to_bgr(X_vec[i])
 
-        # 3072 维特征：RGB->BGR 后直接 flatten
+        # 3072 维特征：按题目要求先做 RGB->BGR，再以 BGR 顺序 flatten
         features[3072][i] = img_bgr.reshape(-1).astype(np.float32) / 255.0
 
         # 其他灰度特征按要求先走 RGB->BGR，再灰度和 resize

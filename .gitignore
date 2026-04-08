@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Data files (should be downloaded manually)
+Experiment2_CIFAR10/data/data_batch_*
+Experiment2_CIFAR10/data/test_batch
+Experiment2_CIFAR10/data/batches.meta
+
+# Generated results (reproducible, not stored in git)
+Experiment2_CIFAR10/results/*.npz
+Experiment2_CIFAR10/results/*.png

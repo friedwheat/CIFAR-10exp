@@ -230,9 +230,10 @@ def evaluate_binary_bias_variance(
 
     preds_float = preds.astype(np.float32)
     mean_pred = preds_float.mean(axis=0)
+    # Variance = E_x[Var_D(f_D(x))]
     variance = float(preds_float.var(axis=0).mean())
     sq_bias = float(((mean_pred - y_test_float) ** 2).mean())
-    mse = float(((preds_float - y_test_float[None, :]) ** 2).mean(axis=1).mean())
+    mse = float(((preds_float - y_test_float[None, :]) ** 2).mean())
     return mse, variance, sq_bias
 
 
@@ -254,7 +255,7 @@ def plot_mse_variance_bias_curves(
     ax.legend()
     ax.set_ylim(bottom=0)
     plt.tight_layout()
-    save_path = os.path.join(results_dir, "mse_variance_sqbias_vs_dimension.png")
+    save_path = os.path.join(results_dir, "mse_variance_sq_bias_vs_dimension.png")
     plt.savefig(save_path, dpi=130)
     plt.close()
     print(f"  MSE/Variance/Sq. Bias 曲线已保存：{save_path}")

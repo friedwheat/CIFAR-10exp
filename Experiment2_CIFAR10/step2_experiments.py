@@ -160,7 +160,9 @@ def load_images_for_diagnosis(
         raw = np.load(raw_path)
         return raw["X_train_raw"][:n_train], raw["X_test_raw"][:n_test]
 
-    # 兜底使用 step1 生成的 3072 维特征（该特征按 BGR 顺序 flatten，需转回 RGB 供显示）
+    # 兜底使用 step1 生成的 3072 维特征（按 BGR 顺序 flatten，显示前转回 RGB）
+    if "X_train_3072" not in features_data or "X_test_3072" not in features_data:
+        raise KeyError("raw_images.npz 缺失且 features.npz 中无 X_train_3072/X_test_3072，无法生成错例图。")
     train_bgr = (
         (features_data["X_train_3072"][:n_train] * PIXEL_MAX_VALUE)
         .astype(np.uint8)
@@ -237,7 +239,7 @@ def main() -> None:
     k_values = sorted(set(args.k_values))
     if 1 not in k_values:
         print("  [警告] k 列表中未包含 1，已自动加入 k=1 以支持 1-NN 距离分析与错例诊断。")
-        k_values = [1] + k_values
+        k_values = sorted(set([1] + k_values))
 
     print(f"  使用样本：train={n_train} test={n_test}")
     print(f"  维度列表：{dims}")
@@ -271,7 +273,7 @@ def main() -> None:
             X_train=X_train,
             y_train=y_train,
             X_test=X_test,
-            k_values=sorted(error_by_k),
+            k_values=sorted(error_by_k.keys()),
             batch_size=args.batch_size,
         )
 
@@ -303,9 +305,10 @@ def main() -> None:
     dim_for_case = FULL_RES_DIM if FULL_RES_DIM in dims else max(dims)
     mis_idx = np.where(pred_by_dim_k1[dim_for_case] != y_test)[0]
     if mis_idx.size == 0:
-        worst_dim_idx = int(np.argmax(error_by_k[1]))
-        dim_for_case = dims[worst_dim_idx]
-        mis_idx = np.where(pred_by_dim_k1[dim_for_case] != y_test)[0]
+        if 1 in error_by_k:
+            worst_dim_idx = int(np.argmax(error_by_k[1]))
+            dim_for_case = dims[worst_dim_idx]
+            mis_idx = np.where(pred_by_dim_k1[dim_for_case] != y_test)[0]
 
     if mis_idx.size > 0:
         chosen_test_idx = int(mis_idx[0])

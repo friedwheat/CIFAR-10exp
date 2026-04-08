@@ -251,7 +251,7 @@ def plot_mse_variance_bias_curves(
     ax.set_title("MSE / Variance / Sq. Bias vs Dimension (1-NN Binary)")
     ax.grid(alpha=0.3)
     ax.legend()
-    ax.set_ylim(0, 1)
+    ax.set_ylim(bottom=0)
     plt.tight_layout()
     save_path = os.path.join(results_dir, "mse_variance_sqbias_vs_dimension.png")
     plt.savefig(save_path, dpi=130)
@@ -444,7 +444,7 @@ def main() -> None:
         f"train_pool={len(y_train_bin)} test_pool={len(y_test_bin)} | "
         f"repeats={args.num_repeats} subset_size={args.subset_train_size}"
     )
-    print(f"{'dim':>6}  {'MSE':>10}  {'Variance':>10}  {'Sq.Bias':>10}  {'MSE-(B+V)':>12}")
+    print(f"{'dim':>6}  {'MSE':>10}  {'Variance':>10}  {'Sq. Bias':>10}  {'MSE-(B+V)':>12}")
     print("-" * 78)
 
     mse_by_dim: List[float] = []

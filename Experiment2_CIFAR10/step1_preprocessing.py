@@ -35,7 +35,7 @@ CIFAR10_CLASSES: List[str] = [
 ]
 
 FEATURE_DIMS: List[int] = [16, 32, 64, 128, 256, 512, 3072]
-# cv2.resize 使用 (width, height)
+# GRAY_RESIZE_SHAPES 中的元组按 (width, height) 存储，以匹配 cv2.resize 参数顺序
 GRAY_RESIZE_SHAPES: Dict[int, Tuple[int, int]] = {
     16: (4, 4),
     32: (8, 4),
@@ -99,7 +99,9 @@ def stratified_sample_per_class(
     for cls in range(10):
         cls_idx = np.where(y == cls)[0]
         if len(cls_idx) < n_per_class:
-            raise ValueError(f"类别 {cls} 样本不足：需要 {n_per_class}，实际 {len(cls_idx)}")
+            raise ValueError(
+                f"类别 {CIFAR10_CLASSES[cls]} 样本不足：需要 {n_per_class}，实际 {len(cls_idx)}"
+            )
         chosen = rng.choice(cls_idx, size=n_per_class, replace=False)
         sampled_idx.append(chosen)
 
@@ -129,10 +131,10 @@ def extract_multiscale_features(X_vec: np.ndarray) -> Dict[int, np.ndarray]:
     for i in range(len(X_vec)):
         img_bgr = vec3072_to_bgr(X_vec[i])
 
-        # 3072 维特征：按题目要求先做 RGB->BGR，再以 BGR 顺序 flatten
+        # 3072 维特征：按需求先做 RGB->BGR，再以 BGR 顺序 flatten
         features[3072][i] = img_bgr.reshape(-1).astype(np.float32) / 255.0
 
-        # 其他灰度特征按要求先走 RGB->BGR，再灰度和 resize
+        # 其他灰度特征也保持同一颜色处理路径（先 BGR），再做灰度与缩放
         for dim in gray_dims:
             features[dim][i] = extract_feature_from_bgr(img_bgr, dim)
 

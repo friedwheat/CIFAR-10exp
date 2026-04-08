@@ -34,15 +34,14 @@ CIFAR10_CLASSES: List[str] = [
     "truck",
 ]
 
-FEATURE_DIMS: List[int] = [16, 32, 64, 128, 256, 512, 3072]
+FEATURE_DIMS: List[int] = [16, 64, 144, 256, 576, 10724, 3072]
 # GRAY_RESIZE_SHAPES 中的元组按 (width, height) 存储，以匹配 cv2.resize 参数顺序
 GRAY_RESIZE_SHAPES: Dict[int, Tuple[int, int]] = {
     16: (4, 4),
-    32: (8, 4),
     64: (8, 8),
-    128: (16, 8),
+    144: (12, 12),
     256: (16, 16),
-    512: (32, 16),
+    1024: (32, 32),
 }
 
 

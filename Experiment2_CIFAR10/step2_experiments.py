@@ -156,6 +156,7 @@ def load_images_for_diagnosis(
         raw = np.load(raw_path)
         return raw["X_train_raw"][:n_train], raw["X_test_raw"][:n_test]
 
+    # 兜底使用 step1 生成的 3072 维特征（该特征按 BGR 顺序 flatten，需转回 RGB 供显示）
     train_bgr = (features_data["X_train_3072"][:n_train] * 255.0).astype(np.uint8).reshape(-1, 32, 32, 3)
     test_bgr = (features_data["X_test_3072"][:n_test] * 255.0).astype(np.uint8).reshape(-1, 32, 32, 3)
     train_rgb = train_bgr[:, :, :, ::-1].reshape(-1, 3072)
@@ -242,8 +243,12 @@ def main() -> None:
     print("-" * 78)
 
     for dim in dims:
-        X_train = data[f"X_train_{dim}"][:n_train].astype(np.float32, copy=False)
-        X_test = data[f"X_test_{dim}"][:n_test].astype(np.float32, copy=False)
+        X_train = data[f"X_train_{dim}"][:n_train]
+        X_test = data[f"X_test_{dim}"][:n_test]
+        if X_train.dtype != np.float32:
+            X_train = X_train.astype(np.float32)
+        if X_test.dtype != np.float32:
+            X_test = X_test.astype(np.float32)
 
         nearest_dist, avg_dist, nearest_idx, preds = evaluate_distances_and_knn(
             X_train=X_train,

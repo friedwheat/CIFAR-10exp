@@ -198,7 +198,7 @@ def predict_1nn(
     X_test: np.ndarray,
     batch_size: int,
 ) -> np.ndarray:
-    preds = np.empty(X_test.shape[0], dtype=np.float32)
+    preds = np.empty(X_test.shape[0], dtype=np.int64)
     for start in range(0, X_test.shape[0], batch_size):
         end = min(start + batch_size, X_test.shape[0])
         dist = l2_distances(X_test[start:end], X_train)
@@ -216,7 +216,7 @@ def evaluate_binary_bias_variance(
     batch_size: int,
 ) -> Tuple[float, float, float]:
     num_repeats = subset_indices.shape[0]
-    preds = np.empty((num_repeats, X_test.shape[0]), dtype=np.float32)
+    preds = np.empty((num_repeats, X_test.shape[0]), dtype=np.int64)
     y_test_float = y_test_bin.astype(np.float32)
 
     for r in range(num_repeats):
@@ -228,10 +228,11 @@ def evaluate_binary_bias_variance(
             batch_size=batch_size,
         )
 
-    mean_pred = preds.mean(axis=0)
-    variance = float(preds.var(axis=0).mean())
+    preds_float = preds.astype(np.float32)
+    mean_pred = preds_float.mean(axis=0)
+    variance = float(preds_float.var(axis=0).mean())
     sq_bias = float(((mean_pred - y_test_float) ** 2).mean())
-    mse = float(((preds - y_test_float[None, :]) ** 2).mean())
+    mse = float(((preds_float - y_test_float[None, :]) ** 2).mean(axis=1).mean())
     return mse, variance, sq_bias
 
 
@@ -256,7 +257,7 @@ def plot_mse_variance_bias_curves(
     save_path = os.path.join(results_dir, "mse_variance_sqbias_vs_dimension.png")
     plt.savefig(save_path, dpi=130)
     plt.close()
-    print(f"  MSE/Variance/Sq.Bias 曲线已保存：{save_path}")
+    print(f"  MSE/Variance/Sq. Bias 曲线已保存：{save_path}")
 
 
 def vec3072_to_rgb(vec: np.ndarray) -> np.ndarray:

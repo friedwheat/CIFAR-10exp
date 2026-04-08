@@ -20,6 +20,10 @@ import numpy as np
 DEFAULT_DIMS = [16, 64, 144, 256, 576, 1024, 3072]
 FULL_RES_DIM = 3072
 EPSILON = 1e-12
+PIXEL_MAX_VALUE = 255.0
+IMAGE_SIDE = 32
+NUM_CHANNELS = 3
+DIAG_FIGSIZE = (6.5, 3.2)
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,7 +146,7 @@ def plot_knn_error_curves(
 
 
 def vec3072_to_rgb(vec: np.ndarray) -> np.ndarray:
-    return vec.reshape(3, 32, 32).transpose(1, 2, 0).astype(np.uint8)
+    return vec.reshape(NUM_CHANNELS, IMAGE_SIDE, IMAGE_SIDE).transpose(1, 2, 0).astype(np.uint8)
 
 
 def load_images_for_diagnosis(
@@ -157,10 +161,18 @@ def load_images_for_diagnosis(
         return raw["X_train_raw"][:n_train], raw["X_test_raw"][:n_test]
 
     # 兜底使用 step1 生成的 3072 维特征（该特征按 BGR 顺序 flatten，需转回 RGB 供显示）
-    train_bgr = (features_data["X_train_3072"][:n_train] * 255.0).astype(np.uint8).reshape(-1, 32, 32, 3)
-    test_bgr = (features_data["X_test_3072"][:n_test] * 255.0).astype(np.uint8).reshape(-1, 32, 32, 3)
-    train_rgb = train_bgr[:, :, :, ::-1].reshape(-1, 3072)
-    test_rgb = test_bgr[:, :, :, ::-1].reshape(-1, 3072)
+    train_bgr = (
+        (features_data["X_train_3072"][:n_train] * PIXEL_MAX_VALUE)
+        .astype(np.uint8)
+        .reshape(-1, IMAGE_SIDE, IMAGE_SIDE, NUM_CHANNELS)
+    )
+    test_bgr = (
+        (features_data["X_test_3072"][:n_test] * PIXEL_MAX_VALUE)
+        .astype(np.uint8)
+        .reshape(-1, IMAGE_SIDE, IMAGE_SIDE, NUM_CHANNELS)
+    )
+    train_rgb = train_bgr[:, :, :, ::-1].reshape(-1, FULL_RES_DIM)
+    test_rgb = test_bgr[:, :, :, ::-1].reshape(-1, FULL_RES_DIM)
     return train_rgb, test_rgb
 
 
@@ -177,7 +189,7 @@ def plot_misclassified_pair(
     test_img = vec3072_to_rgb(test_raw[test_idx])
     nn_img = vec3072_to_rgb(train_raw[nn_train_idx])
 
-    fig, axes = plt.subplots(1, 2, figsize=(6.5, 3.2))
+    fig, axes = plt.subplots(1, 2, figsize=DIAG_FIGSIZE)
     axes[0].imshow(test_img)
     axes[0].set_title(f"Test (idx={test_idx})\ntrue={y_true}, pred={y_pred}")
     axes[0].axis("off")
@@ -222,14 +234,19 @@ def main() -> None:
     n_test = min(args.max_test, len(y_test_full))
     y_train = y_train_full[:n_train]
     y_test = y_test_full[:n_test]
+    k_values = sorted(set(args.k_values))
+    if 1 not in k_values:
+        print("  [警告] k 列表中未包含 1，已自动加入 k=1 以支持 1-NN 距离分析与错例诊断。")
+        k_values = [1] + k_values
+
     print(f"  使用样本：train={n_train} test={n_test}")
     print(f"  维度列表：{dims}")
-    print(f"  k 列表：{sorted(set(args.k_values))}")
+    print(f"  k 列表：{k_values}")
 
     nearest_mean_by_dim: List[float] = []
     avg_mean_by_dim: List[float] = []
     ratio_mean_by_dim: List[float] = []
-    error_by_k: Dict[int, List[float]] = {k: [] for k in sorted(set(args.k_values))}
+    error_by_k: Dict[int, List[float]] = {k: [] for k in k_values}
     pred_by_dim_k1: Dict[int, np.ndarray] = {}
     nn_idx_by_dim: Dict[int, np.ndarray] = {}
 

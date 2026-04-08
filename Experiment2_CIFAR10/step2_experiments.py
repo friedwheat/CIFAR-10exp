@@ -5,6 +5,7 @@ step2_experiments.py – 步骤二：多分辨率下的 1-NN / k-NN 实验
 1) 1-NN 最近邻距离分析（Nearest / Average Distance）
 2) 1-NN 分类与错例诊断
 3) k=1,3,5 的分类误差曲线对比
+4) 固定两类二分类任务：重复采样训练子集，估计 MSE / Variance / Sq. Bias
 """
 
 import argparse
@@ -24,6 +25,7 @@ PIXEL_MAX_VALUE = 255.0
 IMAGE_SIDE = 32
 NUM_CHANNELS = 3
 DIAG_FIGSIZE = (6.5, 3.2)
+BINARY_DEFAULT_CLASSES = [0, 1]
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,6 +42,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_test", type=int, default=500, help="测试样本上限（默认：500）")
     parser.add_argument("--k_values", type=int, nargs="+", default=[1, 3, 5], help="k 值列表（默认：1 3 5）")
     parser.add_argument("--batch_size", type=int, default=100, help="分批计算大小（默认：100）")
+    parser.add_argument(
+        "--binary_classes",
+        type=int,
+        nargs=2,
+        default=BINARY_DEFAULT_CLASSES,
+        metavar=("CLASS_A", "CLASS_B"),
+        help="二分类固定类别（默认：0 1）",
+    )
+    parser.add_argument(
+        "--num_repeats",
+        type=int,
+        default=50,
+        help="重复实验轮数（生成独立训练子集数量，默认：50）",
+    )
+    parser.add_argument(
+        "--subset_train_size",
+        type=int,
+        default=400,
+        help="每轮随机采样训练样本数（不放回，默认：400）",
+    )
+    parser.add_argument("--experiment_seed", type=int, default=42, help="重复实验随机种子（默认：42）")
     return parser.parse_args()
 
 
@@ -143,6 +166,104 @@ def plot_knn_error_curves(
     plt.savefig(save_path, dpi=130)
     plt.close()
     print(f"  分类误差曲线已保存：{save_path}")
+
+
+def generate_subset_indices(
+    pool_size: int,
+    num_repeats: int,
+    subset_train_size: int,
+    rng: np.random.RandomState,
+) -> np.ndarray:
+    if pool_size <= 0:
+        raise ValueError("训练池为空，无法生成训练子集。")
+    if num_repeats <= 0:
+        raise ValueError("num_repeats 必须为正整数。")
+    if subset_train_size <= 0:
+        raise ValueError("subset_train_size 必须为正整数。")
+    if subset_train_size > pool_size:
+        raise ValueError(
+            f"subset_train_size={subset_train_size} 大于训练池大小 {pool_size}，无法在单轮内无放回采样。"
+        )
+
+    subset_indices = np.empty((num_repeats, subset_train_size), dtype=np.int64)
+    all_idx = np.arange(pool_size)
+    for r in range(num_repeats):
+        subset_indices[r] = rng.choice(all_idx, size=subset_train_size, replace=False)
+    return subset_indices
+
+
+def predict_1nn(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    batch_size: int,
+) -> np.ndarray:
+    preds = np.empty(X_test.shape[0], dtype=np.int64)
+    for start in range(0, X_test.shape[0], batch_size):
+        end = min(start + batch_size, X_test.shape[0])
+        dist = l2_distances(X_test[start:end], X_train)
+        nn_idx = np.argmin(dist, axis=1)
+        preds[start:end] = y_train[nn_idx]
+    return preds
+
+
+def ensure_float32(X: np.ndarray) -> np.ndarray:
+    return X if X.dtype == np.float32 else X.astype(np.float32)
+
+
+def evaluate_binary_bias_variance(
+    X_train: np.ndarray,
+    y_train_bin: np.ndarray,
+    X_test: np.ndarray,
+    y_test_bin: np.ndarray,
+    subset_indices: np.ndarray,
+    batch_size: int,
+) -> Tuple[float, float, float]:
+    num_repeats = subset_indices.shape[0]
+    preds = np.empty((num_repeats, X_test.shape[0]), dtype=np.int64)
+    y_test_float = y_test_bin.astype(np.float32)
+
+    for r in range(num_repeats):
+        idx = subset_indices[r]
+        preds[r] = predict_1nn(
+            X_train=X_train[idx],
+            y_train=y_train_bin[idx],
+            X_test=X_test,
+            batch_size=batch_size,
+        )
+
+    preds_float = preds.astype(np.float32)
+    mean_pred = preds_float.mean(axis=0)
+    # Variance = E_x[Var_D(f_D(x))]
+    variance = float(preds_float.var(axis=0).mean())
+    # Sq. Bias = E_x[(E_D[f_D(x)] - y(x))^2]
+    sq_bias = float(((mean_pred - y_test_float) ** 2).mean())
+    mse = float(((preds_float - y_test_float[None, :]) ** 2).mean())
+    return mse, variance, sq_bias
+
+
+def plot_mse_variance_bias_curves(
+    dims: List[int],
+    mses: List[float],
+    variances: List[float],
+    sq_biases: List[float],
+    results_dir: str,
+) -> None:
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(dims, mses, "o-", label="MSE", color="darkorange")
+    ax.plot(dims, variances, "s-", label="Variance", color="steelblue")
+    ax.plot(dims, sq_biases, "^-", label="Sq. Bias", color="tomato")
+    ax.set_xlabel("Dimension")
+    ax.set_ylabel("Error")
+    ax.set_title("MSE / Variance / Sq. Bias vs Dimension (1-NN Binary)")
+    ax.grid(alpha=0.3)
+    ax.legend()
+    ax.set_ylim(bottom=0)
+    plt.tight_layout()
+    save_path = os.path.join(results_dir, "mse_variance_sq_bias_vs_dimension.png")
+    plt.savefig(save_path, dpi=130)
+    plt.close()
+    print(f"  MSE/Variance/Sq. Bias 曲线已保存：{save_path}")
 
 
 def vec3072_to_rgb(vec: np.ndarray) -> np.ndarray:
@@ -301,6 +422,62 @@ def main() -> None:
     plot_distance_curves(dims, nearest_mean_by_dim, ratio_mean_by_dim, args.results_dir)
     plot_knn_error_curves(dims, error_by_k, args.results_dir)
 
+    print("\n" + "=" * 78)
+    print("附加实验：固定两类二分类 + 重复采样训练子集的 1-NN Bias-Variance 分解")
+    print("=" * 78)
+    class_a, class_b = int(args.binary_classes[0]), int(args.binary_classes[1])
+    if class_a == class_b:
+        raise ValueError("--binary_classes 需要提供两个不同类别。")
+
+    train_bin_mask = np.logical_or(y_train_full == class_a, y_train_full == class_b)
+    test_bin_mask = np.logical_or(y_test_full == class_a, y_test_full == class_b)
+    if not train_bin_mask.any() or not test_bin_mask.any():
+        raise ValueError(
+            f"指定类别 {class_a}/{class_b} 在数据中不存在有效样本，请检查 --binary_classes。"
+        )
+
+    y_train_bin = (y_train_full[train_bin_mask] == class_b).astype(np.int64)
+    y_test_bin = (y_test_full[test_bin_mask] == class_b).astype(np.int64)
+    rng = np.random.RandomState(args.experiment_seed)
+    subset_indices = generate_subset_indices(
+        pool_size=len(y_train_bin),
+        num_repeats=args.num_repeats,
+        subset_train_size=args.subset_train_size,
+        rng=rng,
+    )
+
+    print(
+        f"  二分类类别: {class_a}->0, {class_b}->1 | "
+        f"train_pool={len(y_train_bin)} test_pool={len(y_test_bin)} | "
+        f"repeats={args.num_repeats} subset_size={args.subset_train_size}"
+    )
+    print(f"{'dim':>6}  {'MSE':>10}  {'Variance':>10}  {'Sq. Bias':>10}  {'MSE-(B+V)':>12}")
+    print("-" * 78)
+
+    mse_by_dim: List[float] = []
+    variance_by_dim: List[float] = []
+    sq_bias_by_dim: List[float] = []
+    for dim in dims:
+        X_train_bin = ensure_float32(data[f"X_train_{dim}"][train_bin_mask])
+        X_test_bin = ensure_float32(data[f"X_test_{dim}"][test_bin_mask])
+
+        mse, variance, sq_bias = evaluate_binary_bias_variance(
+            X_train=X_train_bin,
+            y_train_bin=y_train_bin,
+            X_test=X_test_bin,
+            y_test_bin=y_test_bin,
+            subset_indices=subset_indices,
+            batch_size=args.batch_size,
+        )
+        mse_by_dim.append(mse)
+        variance_by_dim.append(variance)
+        sq_bias_by_dim.append(sq_bias)
+        residual = mse - (variance + sq_bias)
+        print(f"{dim:>6}  {mse:>10.6f}  {variance:>10.6f}  {sq_bias:>10.6f}  {residual:>12.6f}")
+    print("-" * 78)
+
+    plot_mse_variance_bias_curves(dims, mse_by_dim, variance_by_dim, sq_bias_by_dim, args.results_dir)
+
     # 错例：优先最高维（3072）；若该维度无错例，则退化到 k=1 错误率最高的维度
     dim_for_case = FULL_RES_DIM if FULL_RES_DIM in dims else max(dims)
     mis_idx = np.where(pred_by_dim_k1[dim_for_case] != y_test)[0]
@@ -336,6 +513,12 @@ def main() -> None:
     }
     for k, errs in error_by_k.items():
         save_dict[f"error_k_{k}"] = np.array(errs)
+    save_dict["binary_classes"] = np.array([class_a, class_b], dtype=np.int64)
+    save_dict["binary_num_repeats"] = args.num_repeats
+    save_dict["binary_subset_train_size"] = args.subset_train_size
+    save_dict["binary_mse"] = np.array(mse_by_dim, dtype=np.float64)
+    save_dict["binary_variance"] = np.array(variance_by_dim, dtype=np.float64)
+    save_dict["binary_sq_bias"] = np.array(sq_bias_by_dim, dtype=np.float64)
     np.savez_compressed(save_path, **save_dict)
     print(f"  结果数据已保存：{save_path}")
     print("\n[步骤二] 实验完成！\n")

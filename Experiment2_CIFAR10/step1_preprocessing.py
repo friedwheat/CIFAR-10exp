@@ -130,9 +130,7 @@ def extract_multiscale_features(X_vec: np.ndarray) -> Dict[int, np.ndarray]:
         # 3072 维特征直接由原始向量归一化得到，避免不必要图像转换
         features[3072][i] = X_vec[i].astype(np.float32) / 255.0
 
-        # 其余灰度特征按要求走 RGB->BGR，再灰度和 resize
-        if not gray_dims:
-            continue
+        # 其他灰度特征按要求先走 RGB->BGR，再灰度和 resize
         img_bgr = vec3072_to_bgr(X_vec[i])
         for dim in gray_dims:
             features[dim][i] = extract_feature_from_bgr(img_bgr, dim)
@@ -188,7 +186,7 @@ def main() -> None:
     save_dict = {
         "y_train": y_train,
         "y_test": y_test,
-        # 兼容键（保持 step2 默认 flatten 可直接使用）
+        # 向后兼容 step2_experiments.py 中默认读取的 flatten 特征键
         "X_train_flat": train_features[3072],
         "X_test_flat": test_features[3072],
     }

@@ -18,6 +18,8 @@ import numpy as np
 
 
 DEFAULT_DIMS = [16, 64, 144, 256, 576, 1024, 3072]
+FULL_RES_DIM = 3072
+EPSILON = 1e-12
 
 
 def parse_args() -> argparse.Namespace:
@@ -251,7 +253,7 @@ def main() -> None:
             batch_size=args.batch_size,
         )
 
-        ratio = nearest_dist / np.maximum(avg_dist, 1e-12)
+        ratio = nearest_dist / np.maximum(avg_dist, EPSILON)
         nearest_mean = float(nearest_dist.mean())
         avg_mean = float(avg_dist.mean())
         ratio_mean = float(ratio.mean())
@@ -276,7 +278,7 @@ def main() -> None:
     plot_knn_error_curves(dims, error_by_k, args.results_dir)
 
     # 错例：优先最高维（3072）；若该维度无错例，则退化到 k=1 错误率最高的维度
-    dim_for_case = 3072 if 3072 in dims else max(dims)
+    dim_for_case = FULL_RES_DIM if FULL_RES_DIM in dims else max(dims)
     mis_idx = np.where(pred_by_dim_k1[dim_for_case] != y_test)[0]
     if mis_idx.size == 0:
         worst_dim_idx = int(np.argmax(error_by_k[1]))
